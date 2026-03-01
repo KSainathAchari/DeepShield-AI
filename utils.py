@@ -1,4 +1,4 @@
-    n_sample = min(max_frames, total_frames)
+n_sample = min(max_frames, total_frames)
     indices  = np.linspace(0, total_frames - 1, num=n_sample, dtype=int)
 
     frames: list[np.ndarray] = []
