@@ -1,0 +1,147 @@
+    frame_array: np.ndarray,
+    threshold:   float = 0.50,
+) -> dict:
+    """
+    Run deepfake detection on a batch of pre-processed video frames.
+
+    This function mirrors the FastAPI backend's `_run_inference()` call:
+        raw_score = _run_inference(frames)  →  float (mean sigmoid output)
+
+    Parameters
+    ----------
+    frame_array : np.ndarray, shape (N, 224, 224, 3), dtype float32, range [0,1]
+        Pre-processed frames from OpenCV.
+    threshold : float
+        Decision boundary. Default 0.50.
+        Use best_threshold from CELL 12 for better F1.
+
+    Returns
+    -------
+    dict
+        {
+            "label":      "REAL" | "FAKE",
+            "confidence": float (0–100),
+            "raw_score":  float (sigmoid mean across frames),
+            "per_frame":  list[float],
+        }
+    """
+    if frame_array.ndim == 3:
+        frame_array = np.expand_dims(frame_array, axis=0)
+
+    assert frame_array.shape[1:] == (IMG_SIZE, IMG_SIZE, 3), (
+        f"Expected frames of shape (N, {IMG_SIZE}, {IMG_SIZE}, 3), "
+        f"got {frame_array.shape}"
+    )
+    assert frame_array.max() <= 1.0, (
+        "Frames must be normalised to [0, 1]. Divide by 255 before calling."
+    )
+
+    per_frame = model.predict(frame_array, batch_size=32, verbose=0).squeeze().tolist()
+    if isinstance(per_frame, float): per_frame = [per_frame]
+
+    raw_score  = float(np.mean(per_frame))
+    label      = "FAKE" if raw_score >= threshold else "REAL"
+    confidence = round((raw_score if label == "FAKE" else 1 - raw_score) * 100, 2)
+
+    return {
+        "label":      label,
+        "confidence": confidence,
+        "raw_score":  round(raw_score, 6),
+        "per_frame":  [round(s, 4) for s in per_frame],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CELL 16 ▸  Quick sanity check — random validation frames
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n🧪 Sanity check — 5 random validation frames …\n")
+
+val_generator.reset()
+x_batch, y_batch = next(iter(val_generator))
+
+rng     = np.random.default_rng(SEED)
+indices = rng.choice(len(x_batch), size=min(5, len(x_batch)), replace=False)
+
+fig, axes = plt.subplots(1, len(indices), figsize=(4 * len(indices), 4))
+fig.patch.set_facecolor("#0c0f1a")
+if len(indices) == 1: axes = [axes]
+
+for ax, i in zip(axes, indices):
+    frame      = x_batch[i]
+    truth      = "FAKE" if int(y_batch[i]) == 1 else "REAL"
+    result     = predict_video_frames(frame, threshold=best_threshold)
+    predicted  = result["label"]
+    confidence = result["confidence"]
+    correct    = truth == predicted
+    border_col = "#34d399" if correct else "#f87171"
+
+    ax.imshow(frame)
+    ax.axis("off")
+    ax.set_title(
+        f"Truth: {truth}\nPred: {predicted} ({confidence:.1f}%)",
+        color=border_col, fontsize=10, fontweight="bold"
+    )
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_edgecolor(border_col)
+        spine.set_linewidth(3)
+
+plt.suptitle("DeepShield AI — Sample Predictions", color="#f1f5f9",
+             fontsize=12, fontweight="bold", y=1.02)
+plt.tight_layout()
+SAMPLE_PLOT = os.path.join(OUTPUT_DIR, "sample_predictions.png")
+plt.savefig(SAMPLE_PLOT, dpi=150, bbox_inches="tight",
+            facecolor=fig.get_facecolor())
+plt.show()
+print(f"🖼  Sample plot saved → {SAMPLE_PLOT}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CELL 17 ▸  Model verification — reload from disk and test
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n🔄 Verifying saved model …")
+loaded_model = tf.keras.models.load_model(MODEL_SAVE_PATH, compile=False)
+
+# Warm-up
+dummy = np.zeros((1, IMG_SIZE, IMG_SIZE, 3), dtype=np.float32)
+loaded_model.predict(dummy, verbose=0)
+
+# Time a single frame
+import time as _time
+t = _time.perf_counter()
+loaded_model.predict(dummy, verbose=0)
+latency_ms = (_time.perf_counter() - t) * 1000
+
+print(f"✅ Model reloaded successfully")
+print(f"   Input  shape : {loaded_model.input_shape}")
+print(f"   Output shape : {loaded_model.output_shape}")
+print(f"   Single-frame latency : {latency_ms:.1f} ms")
+print(f"   → Estimated 20-frame video : {latency_ms * 20:.0f} ms  (well under 10 s)")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CELL 18 ▸  Final summary
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 60)
+print("  DeepShield AI — Training Complete")
+print("═" * 60)
+print(f"\n  Phase 1 best val accuracy : {max(history_p1.history['val_accuracy'])*100:.2f}%")
+if history_p2:
+    print(f"  Phase 2 best val accuracy : {max(history_p2.history['val_accuracy'])*100:.2f}%")
+print(f"  Final val accuracy        : {val_acc  * 100:.2f}%")
+print(f"  Final val AUC             : {val_auc  * 100:.2f}%")
+print(f"  F1 Score                  : {f1       * 100:.2f}%")
+print(f"  Optimal threshold         : {best_threshold:.2f}")
+print()
+print("  Saved artifacts:")
+print(f"    {MODEL_SAVE_PATH}")
+print(f"    {PLOT_HISTORY_PATH}")
+print(f"    {PLOT_CM_PATH}")
+print(f"    {PLOT_ROC_PATH}")
+print(f"    {SAMPLE_PLOT}")
+print()
+print("  FastAPI deployment:")
+print("    1. Copy deepfake_model.h5 to your project root")
+print("    2. The model accepts: numpy array shape (N, 224, 224, 3), float32 [0,1]")
+print("    3. Output > 0.5  →  FAKE  |  Output ≤ 0.5  →  REAL")
+print("═" * 60)
