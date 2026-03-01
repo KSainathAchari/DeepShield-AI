@@ -145,3 +145,5 @@ print("    1. Copy deepfake_model.h5 to your project root")
 print("    2. The model accepts: numpy array shape (N, 224, 224, 3), float32 [0,1]")
 print("    3. Output > 0.5  →  FAKE  |  Output ≤ 0.5  →  REAL")
 print("═" * 60)
+
+
